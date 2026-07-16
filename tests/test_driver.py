@@ -155,15 +155,68 @@ class TestToolNameParsing:
     def test_json_object_with_tools_key(self):
         assert driver._tool_names('{"tools": [{"name": "click"}]}') == ["click"]
 
-    def test_plain_text_fallback(self):
-        assert "click" in driver._tool_names("click  Click an element\ntype_text  Type\n")
+    def test_parses_the_real_list_tools_format(self):
+        """Verbatim from `cua-driver list-tools` on 0.8.3 — one `name: description`
+        per line. The first cut of this parser assumed whitespace-separated columns
+        and silently returned [] against the real thing, which quietly disabled
+        probe()'s mismatch check."""
+        real = (
+            "bring_to_front: Persistently activate an app so it genuinely holds macOS foreground\n"
+            "click: Click against a target pid\n"
+            "drag: Press-drag-release gesture from (from_x, from_y) to (to_x, to_y) — window-local\n"
+            "get_window_state: Walk a running app's AX tree and return BOTH a structured `elements` array\n"
+            "type_text: Insert text into the target pid via `AXSetAttribute(kAXSelectedText)`\n"
+        )
+        assert driver._tool_names(real) == ["bring_to_front", "click", "drag", "get_window_state", "type_text"]
 
-    def test_text_fallback_skips_kebab_subcommands(self):
+    def test_descriptions_containing_colons_do_not_yield_extra_tools(self):
+        """Real descriptions contain colons — only the line-start name counts."""
+        line = "list_apps: List macOS apps — both running and installed — with per-app state flags:\n"
+        assert driver._tool_names(line) == ["list_apps"]
+
+    def test_skips_kebab_subcommands(self):
         """Tools are snake_case; management subcommands are kebab-case."""
-        assert "check-update" not in driver._tool_names("click\ncheck-update\n")
+        assert driver._tool_names("click: Click\ncheck-update: Check for a release\n") == ["click"]
+
+    def test_skips_advisory_prose(self):
+        """The driver prints advisory text on stderr, but never trust it not to
+        reach stdout — a prose line must not become a tool name."""
+        assert driver._tool_names("cua-driver-rs: reporting permission status only.\n") == []
 
     def test_garbage_does_not_raise(self):
         assert driver._tool_names("") == []
+
+
+# Verbatim payloads from cua-driver 0.8.3. The first cut of this suite invented
+# both shapes and passed against fiction while the real probe was broken.
+GRANTED = """{
+  "accessibility": true, "screen_recording": true, "screen_recording_capturable": true,
+  "source": {"attribution": "driver-daemon", "disclaim_env": false,
+             "note": "These booleans reflect the CuaDriver daemon's own TCC identity."}
+}"""
+NO_DAEMON = """{
+  "daemon_running": false,
+  "reason": "no CuaDriver daemon is running under the driver's own identity (com.trycua.driver), so its real TCC status can't be read from this process. Run `cua-driver permissions grant` to grant + verify.",
+  "status": "unknown"
+}"""
+CALLER_ATTRIBUTED = """{
+  "accessibility": true, "screen_recording": true, "screen_recording_capturable": true,
+  "source": {"attribution": "caller", "disclaim_env": false,
+             "note": "These booleans reflect the TCC identity of the app that launched this process."}
+}"""
+
+
+def _runner(tools_out, perms_rc=0, perms_out=GRANTED):
+    def fake_run(binary, args, timeout=10.0):
+        if args[0] == "list-tools":
+            return 0, tools_out, ""
+        return perms_rc, perms_out, ""
+
+    return fake_run
+
+
+def _tools_text(names):
+    return "".join(f"{n}: does a thing\n" for n in names)
 
 
 class TestProbe:
@@ -175,33 +228,77 @@ class TestProbe:
         assert "not found" in r["error"]
 
     def test_flags_configured_tools_the_driver_does_not_publish(self, tmp_path, monkeypatch):
-        """CORE_TOOLS is inferred from upstream source, so the probe must verify it."""
+        b = _fake_binary(tmp_path / "cua-driver")
+        monkeypatch.setattr(driver, "_run", _runner(_tools_text(["click", "get_window_state"])))
+        r = driver.probe({"enabled": True, "binary_path": b, "extra_tools": ["not_a_real_tool"]})
+        assert r["ok"] is True
+        assert "not_a_real_tool" in r["error"]
+
+    def test_uses_permissions_status_not_the_check_permissions_tool(self, tmp_path, monkeypatch):
+        """check_permissions answers for the CALLER's TCC identity, so it reports
+        `accessibility: true` while the driver itself has no grant. Only
+        `permissions status` carries the driver's own identity."""
         b = _fake_binary(tmp_path / "cua-driver")
         calls = []
 
         def fake_run(binary, args, timeout=10.0):
-            calls.append(args[0])
-            if args[0] == "list-tools":
-                return 0, '["click", "get_window_state"]', ""
-            return 0, '{"accessibility": true}', ""
+            calls.append(list(args))
+            return (0, _tools_text(driver.CORE_TOOLS), "") if args[0] == "list-tools" else (0, GRANTED, "")
 
         monkeypatch.setattr(driver, "_run", fake_run)
-        r = driver.probe({"enabled": True, "binary_path": b, "extra_tools": ["not_a_real_tool"]})
-        assert r["ok"] is True
-        assert "not_a_real_tool" in r["error"]
-        assert "check_permissions" in calls
+        driver.probe({"enabled": True, "binary_path": b})
+        assert ["permissions", "status", "--json"] in calls
+        assert not any("check_permissions" in a for a in calls)
 
-    def test_reports_denied_permissions(self, tmp_path, monkeypatch):
+    def test_granted_probe_has_no_notes(self, tmp_path, monkeypatch):
         b = _fake_binary(tmp_path / "cua-driver")
-
-        def fake_run(binary, args, timeout=10.0):
-            if args[0] == "list-tools":
-                return 0, '["click"]', ""
-            return 0, '{"accessibility": false}', ""
-
-        monkeypatch.setattr(driver, "_run", fake_run)
+        monkeypatch.setattr(driver, "_run", _runner(_tools_text(driver.CORE_TOOLS)))
         r = driver.probe({"enabled": True, "binary_path": b})
-        assert "grant" in (r["error"] or "").lower()
+        assert r["ok"] is True
+        assert r["error"] is None
+        assert "17 tool(s) bound of 17 published" in r["identity"]
+
+    def test_no_daemon_is_unknown_not_denied(self, tmp_path, monkeypatch):
+        """Honest 'can't tell yet' — the old grep read `"disclaim_env": false` and
+        cried missing-grant on a fully-granted machine."""
+        b = _fake_binary(tmp_path / "cua-driver")
+        monkeypatch.setattr(driver, "_run", _runner(_tools_text(driver.CORE_TOOLS), perms_out=NO_DAEMON))
+        r = driver.probe({"enabled": True, "binary_path": b})
+        assert "can't be confirmed" in r["error"]
+        assert "permissions grant" in r["error"]
+
+    def test_caller_attributed_grants_are_not_trusted(self, tmp_path, monkeypatch):
+        """A `true` for the calling terminal says nothing about the driver."""
+        b = _fake_binary(tmp_path / "cua-driver")
+        monkeypatch.setattr(driver, "_run", _runner(_tools_text(driver.CORE_TOOLS), perms_out=CALLER_ATTRIBUTED))
+        r = driver.probe({"enabled": True, "binary_path": b})
+        assert "can't be confirmed" in r["error"]
+        assert "caller" in r["error"]
+
+    def test_denied_grant_is_reported(self, tmp_path, monkeypatch):
+        b = _fake_binary(tmp_path / "cua-driver")
+        denied = GRANTED.replace('"accessibility": true', '"accessibility": false')
+        monkeypatch.setattr(driver, "_run", _runner(_tools_text(driver.CORE_TOOLS), perms_out=denied))
+        r = driver.probe({"enabled": True, "binary_path": b})
+        assert "missing a macOS grant" in r["error"]
+        assert "accessibility" in r["error"]
+
+    def test_permissions_subcommand_absent_is_not_an_error(self, tmp_path, monkeypatch):
+        """`permissions` is macOS-only — its absence elsewhere isn't a problem."""
+        b = _fake_binary(tmp_path / "cua-driver")
+        monkeypatch.setattr(
+            driver, "_run", _runner(_tools_text(driver.CORE_TOOLS), perms_rc=2, perms_out="unknown subcommand")
+        )
+        r = driver.probe({"enabled": True, "binary_path": b})
+        assert r["ok"] is True
+        assert r["error"] is None
+
+    def test_unparseable_tool_list_does_not_report_a_clean_bill(self, tmp_path, monkeypatch):
+        """A parser miss must not masquerade as verification."""
+        b = _fake_binary(tmp_path / "cua-driver")
+        monkeypatch.setattr(driver, "_run", _runner("some unexpected banner\n"))
+        r = driver.probe({"enabled": True, "binary_path": b})
+        assert "unverified" in r["error"]
 
     def test_list_tools_failure_is_not_ok(self, tmp_path, monkeypatch):
         b = _fake_binary(tmp_path / "cua-driver")
@@ -209,19 +306,3 @@ class TestProbe:
         r = driver.probe({"enabled": True, "binary_path": b})
         assert r["ok"] is False
         assert "boom" in r["error"]
-
-    def test_clean_probe_has_no_notes(self, tmp_path, monkeypatch):
-        b = _fake_binary(tmp_path / "cua-driver")
-        published = list(driver.CORE_TOOLS)
-
-        def fake_run(binary, args, timeout=10.0):
-            if args[0] == "list-tools":
-                import json as _json
-
-                return 0, _json.dumps(published), ""
-            return 0, '{"accessibility": true, "screen_recording": true}', ""
-
-        monkeypatch.setattr(driver, "_run", fake_run)
-        r = driver.probe({"enabled": True, "binary_path": b})
-        assert r["ok"] is True
-        assert r["error"] is None

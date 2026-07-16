@@ -49,18 +49,46 @@ Lands in `~/.local/bin` by default (`--bin-dir` or `CUA_DRIVER_BIN_DIR` to
 change). Uninstall: `curl -fsSL https://cua.ai/driver/uninstall.sh | bash`.
 
 **2. Grant permissions (macOS).** The driver needs **Accessibility** and **Screen
-Recording** in System Settings ▸ Privacy & Security. There's no way around this
-step and no way to script it — macOS requires a human.
+Recording**. Don't do this by hand in System Settings — run:
 
-Grants attach to the *responsible app identity*, which is **not** always the one
-you expect: launched from your shell it's your terminal; under the packaged
-desktop app it's the protoAgent sidecar. If you set it up in a terminal and it
-then fails in the desktop app, this is why — grant the other identity too.
+```sh
+cua-driver permissions grant
+```
+
+This exists because TCC grants attach to the **responsible app identity**, and
+the intuitive route grants the wrong one. Approving a dialog raised from your
+terminal grants *your terminal*, not the driver; the driver still can't read a
+window, and every status check lies to you about it in the cheeriest way. The
+`grant` subcommand launches CuaDriver via LaunchServices so the dialog attributes
+to `com.trycua.driver`, then confirms.
+
+Verify with `cua-driver permissions status --json` — it answers through the
+running daemon, so a `true` carries the driver's own identity
+(`"attribution": "driver-daemon"`). With no daemon it reports `unknown` rather
+than guessing.
+
+> **Don't trust `cua-driver check_permissions`.** It reports the **caller's** TCC
+> identity, so from your shell it happily says `accessibility: true` on a machine
+> where the driver has no grant at all. `permissions status` is the honest one.
+> (This plugin's Test button uses `permissions status`; an earlier cut used the
+> tool and reported a missing grant on a fully-granted machine.)
 
 **3. Enable the plugin.** Settings ▸ Computer use ▸ *Enable computer use*, then
 hit **Test connection**. That's not decorative: it's the only thing that checks
-all three failure modes at once (binary found, TCC granted, configured tool names
-real).
+all three failure modes at once (binary found, TCC granted for the *driver*, and
+configured tool names real for *this* driver build). A healthy result reads like:
+
+```
+/Users/you/.local/bin/cua-driver · 17 tool(s) bound of 38 published
+```
+
+**4. Consider running the daemon.** `cua-driver serve` (macOS:
+`open -n -g -a CuaDriver --args serve`) keeps a background process that owns the
+OS handles under `com.trycua.driver`. With it running, one grant to the driver
+covers every caller. Without it, `cua-driver mcp` bootstraps its own runloop
+inside whatever spawned it — which means the **protoAgent process's** identity is
+the one macOS checks, and that differs between `scripts/dev.sh` and the packaged
+desktop app.
 
 ---
 
@@ -70,12 +98,12 @@ real).
 |---|---|---|
 | **Enable computer use** | off | Off ⇒ no server spawns, no tools exist. |
 | **cua-driver path** | *(blank)* | Blank = probe PATH, then `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. |
-| **Tool surface** | `core` | `core` binds the documented loop (17 tools); `full` binds all ~28. |
+| **Tool surface** | `core` | `core` binds the documented loop (17 tools); `full` binds all 38. |
 | **Extra tools** | *(none)* | Names added on top of `core`, e.g. `kill_app`. |
 
 ### Why `core` is the default
 
-The driver publishes ~28 tools. Binding all of them spends context on every turn
+The driver publishes **38** tools (verified on 0.8.3). Binding all of them spends context on every turn
 for surface the agent almost never needs (protoAgent ADR 0005). `core` is the
 snapshot→act loop; everything else is one config edit away.
 
@@ -84,8 +112,9 @@ Left out of `core` on purpose:
 - **`bring_to_front`** — steals focus, which is the one thing this driver exists
   to avoid.
 - **`kill_app`** — destructive.
-- **`get_accessibility_tree`** — the raw tree; `get_window_state` is the curated view.
-- **`page` / browser tools** — a second capability with its own session protocol.
+- **`get_accessibility_tree`** — despite the name, a *desktop*-level snapshot (apps + visible windows + bounds/z-order) that overlaps `list_apps`/`list_windows`. `get_window_state` is the per-window AX tree you actually act on.
+- **`page`** — the browser capability, with its own session protocol (`WEB_APPS.md`).
+- **`start_session` / `end_session`, recording, cursor styling** — MCP mints a session per connection, so you don't need these.
 - **`check_for_update`** — driver self-update. Deliberately operator-driven
   (ADR 0084): `plugins.update_policy` can't see a binary updating itself.
 

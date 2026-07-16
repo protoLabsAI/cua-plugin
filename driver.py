@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -30,21 +31,24 @@ _BINARY = "cua-driver"
 #: sidecar, which does not inherit your shell's environment.
 _FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 
-#: The documented snapshot->act loop (ADR 0084 D3). The driver exposes ~28 tools;
-#: binding all of them costs context on every turn for surface the agent rarely
-#: needs (ADR 0005). Deliberately excluded from the default, available via
+#: The documented snapshot->act loop (ADR 0084 D3). Driver 0.8.3 publishes **38**
+#: tools; binding all of them costs context on every turn for surface the agent
+#: rarely needs (ADR 0005). Deliberately excluded from the default, available via
 #: ``extra_tools``:
 #:   bring_to_front     — steals focus, which is the whole thing the driver avoids
-#:   kill_app           — destructive
-#:   get_accessibility_tree — raw tree; get_window_state is the curated view
-#:   get_config/set_config, health_report, cursor tools — driver-tuning surface
-#:   page/browser tools — a second capability with its own protocol (WEB_APPS.md)
+#:   kill_app           — destructive (kill -9)
+#:   get_accessibility_tree — despite the name, a DESKTOP-level snapshot (apps +
+#:                       visible windows + bounds/z-order), overlapping list_apps
+#:                       and list_windows. get_window_state is the per-window tree.
+#:   get_config/set_config, health_report, cursor + recording tools, start/end_session
+#:                     — driver-tuning surface; MCP mints a session per connection
+#:   page               — the browser capability, its own protocol (WEB_APPS.md)
 #:   check_for_update   — driver self-update; ADR 0084 keeps that operator-driven
 #:
-#: These names are inferred from the driver's tool modules and are NOT verified at
-#: import time. ``include`` silently drops names the server doesn't publish, so a
-#: wrong name is a missing tool, not a crash — ``probe`` diffs this list against
-#: the driver's real surface and the Test button reports the mismatch.
+#: Verified against `cua-driver list-tools` on 0.8.3: all 17 exist. ``include``
+#: silently drops names the server doesn't publish, so a wrong name is a missing
+#: tool, not a crash — ``probe`` re-diffs this list against the live driver so a
+#: version bump that renames a tool surfaces in the Test button.
 CORE_TOOLS: tuple[str, ...] = (
     # discover
     "list_apps",
@@ -183,11 +187,20 @@ def _run(binary: str, args: list[str], timeout: float = 10.0) -> tuple[int, str,
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
-def _tool_names(stdout: str) -> list[str]:
-    """Tool names out of `cua-driver list-tools`, JSON or plain text.
+#: One `name: description` per line — the real shape of `list-tools` as of driver
+#: 0.8.3, which ignores `--json`. Anchored at line start; descriptions wrap no
+#: lines, but anchoring means a continuation line could never be mistaken for a
+#: tool if that ever changes.
+_TOOL_LINE = re.compile(r"^([a-z][a-z0-9_]*):\s")
 
-    The output shape isn't a stable contract, so parse defensively and fall back
-    to line-scraping rather than reporting a false "no tools".
+
+def _tool_names(stdout: str) -> list[str]:
+    """Tool names out of `cua-driver list-tools`.
+
+    Text is the real format; the JSON branches are tolerated in case a later
+    driver grows a machine-readable mode. Parse defensively either way — a
+    parser that silently yields [] would disable the mismatch check in `probe`
+    and report a clean bill of health it never verified.
     """
     try:
         data = json.loads(stdout)
@@ -209,13 +222,48 @@ def _tool_names(stdout: str) -> list[str]:
             out = [t if isinstance(t, str) else str(t.get("name", "")) for t in tools]
             return [t for t in out if t]
 
-    names = []
-    for line in stdout.splitlines():
-        tok = line.strip().split()[0] if line.strip() else ""
-        # tool names are snake_case; subcommands are kebab-case (upstream SKILL.md)
-        if tok and "-" not in tok and tok.replace("_", "").isalnum() and not tok[0].isupper():
-            names.append(tok)
-    return names
+    return [m.group(1) for line in stdout.splitlines() if (m := _TOOL_LINE.match(line))]
+
+
+def _permissions(binary: str) -> tuple[str, str]:
+    """macOS TCC state as ``(state, note)`` — state is ok | unknown | denied | skip.
+
+    Uses ``permissions status --json``, NOT the ``check_permissions`` tool. The
+    tool answers for the **caller's** TCC identity (your terminal, or whatever
+    spawned it), so it cheerfully reports ``accessibility: true`` while the driver
+    itself has no grant at all. ``permissions status`` answers via the running
+    daemon, so a true is the driver's own (``attribution: "driver-daemon"``), and
+    with no daemon it honestly says ``unknown`` instead of guessing.
+    """
+    rc, out, err = _run(binary, ["permissions", "status", "--json"])
+    if rc != 0:
+        # macOS-only subcommand — on other platforms its absence isn't a problem.
+        return "skip", ""
+
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return "skip", ""
+
+    if data.get("status") == "unknown" or data.get("daemon_running") is False:
+        return "unknown", str(data.get("reason") or "").strip()
+
+    needed = ("accessibility", "screen_recording")
+    missing = [k for k in needed if data.get(k) is False]
+    if missing:
+        return "denied", "missing grant(s): " + ", ".join(missing)
+
+    if not any(k in data for k in needed):
+        return "skip", ""
+
+    attribution = str((data.get("source") or {}).get("attribution") or "")
+    if attribution and attribution != "driver-daemon":
+        # A `true` attributed to the caller says nothing about the driver.
+        return "unknown", (
+            f"grants reported for the calling process ({attribution}), not the driver's own identity — "
+            "start the daemon (`cua-driver serve`) or run `cua-driver permissions grant` to confirm"
+        )
+    return "ok", ""
 
 
 def probe(section: dict) -> dict:
@@ -248,22 +296,24 @@ def probe(section: dict) -> dict:
     bound = [t for t in requested if t in published] if published else requested
 
     notes = []
+    if not published:
+        # Don't let a parser miss masquerade as a clean bill of health.
+        notes.append(f"Couldn't read the tool list from `{_BINARY} list-tools`, so the names above are unverified.")
     if unknown:
         notes.append(
             "These configured tools don't exist in this driver build and will be ignored: " + ", ".join(unknown)
         )
-    if surface == "full" and len(published) > 20:
+    if surface == "full" and len(published) > len(CORE_TOOLS):
         notes.append(f"“full” binds {len(published)} tools into every turn — “core” binds {len(CORE_TOOLS)}.")
 
-    rc_p, out_p, err_p = _run(binary, ["check_permissions", "{}"])
-    if rc_p != 0:
+    state, why = _permissions(binary)
+    if state == "unknown":
+        notes.append("Permissions can't be confirmed yet: " + why)
+    elif state == "denied":
         notes.append(
-            "Permission check failed — on macOS the driver needs Accessibility + "
-            "Screen Recording grants before it can read or drive a window: "
-            + (err_p or out_p or f"exit {rc_p}").strip()
+            "The driver is missing a macOS grant, so it can't read or drive a window — "
+            f"run `{_BINARY} permissions grant`: {why}"
         )
-    elif out_p and ("false" in out_p.lower() or "denied" in out_p.lower()):
-        notes.append("The driver reports a missing permission grant: " + out_p.strip()[:400])
 
     return {
         "ok": True,

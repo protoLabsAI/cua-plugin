@@ -1,6 +1,6 @@
 id: cua
 name: Computer use (cua-driver)
-version: 0.1.0
+version: 0.1.1
 description: >-
   Let the agent drive native GUI apps on THIS machine — snapshot a window's
   accessibility tree, then click/type/scroll by element, without bringing the app
