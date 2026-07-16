@@ -98,6 +98,17 @@ def test_extra_tools_hides_when_it_would_be_ignored(m):
     assert driver.tool_filter({"tool_surface": "full", "extra_tools": ["x"]}) is None
 
 
+def test_stated_tool_count_matches_the_code(m):
+    """Operator-facing copy makes a factual claim about how many tools `core`
+    binds. Numbers in prose drift silently — pin it to the list."""
+    import re
+
+    field = next(s for s in m["settings"] if s["key"] == "tool_surface")
+    claimed = re.search(r"(\d+) tools", field["description"])
+    assert claimed, "the tool_surface description should state how many tools 'core' binds"
+    assert int(claimed.group(1)) == len(driver.CORE_TOOLS)
+
+
 def test_declares_no_secrets(m):
     """Nothing to leak — the driver is a local binary, not an API."""
     assert not m.get("secrets")

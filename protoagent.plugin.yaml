@@ -67,7 +67,7 @@ settings:
     options: [core, full]
     group: "Computer use"
     description: >-
-      “core” binds the documented loop (~16 tools). “full” binds all ~28 and
+      “core” binds the documented loop (17 tools). “full” binds all ~28 and
       costs context on every turn.
   - key: extra_tools
     label: "Extra tools"
