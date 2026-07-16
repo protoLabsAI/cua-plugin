@@ -50,7 +50,10 @@ class FakeRegistry:
         self.skill_dirs.append(path)
 
     def register_router(self, router, prefix=None) -> None:
-        self.routers.append((router, prefix))
+        # (prefix, router) mirrors graph/plugins/testkit.py's convention. The real
+        # registry stores {"router", "prefix"} and resolves the effective prefix;
+        # the host-free fakes both simplify, so follow the sanctioned one.
+        self.routers.append((prefix, router))
 
     def register_tool(self, tool) -> None:
         self.tools.append(tool)

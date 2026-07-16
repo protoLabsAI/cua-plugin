@@ -33,10 +33,9 @@ def test_the_skill_dir_exists(registered):
 def test_registers_the_test_route_at_the_convention_path(registered):
     """`/api/config/test-<section>` is a fixed URL; prefix="" is the sanctioned
     escape hatch (the core chat-surface wirer uses the same one)."""
-    _, prefix = registered.routers[0]
+    prefix, router = registered.routers[0]
     assert prefix == ""
-    paths = [r.path for r in registered.routers[0][0].routes]
-    assert "/api/config/test-cua" in paths
+    assert "/api/config/test-cua" in [r.path for r in router.routes]
 
 
 def test_registers_no_tools(registered):
