@@ -1,0 +1,82 @@
+id: cua
+name: Computer use (cua-driver)
+version: 0.1.0
+description: >-
+  Let the agent drive native GUI apps on THIS machine — snapshot a window's
+  accessibility tree, then click/type/scroll by element, without bringing the app
+  to the foreground. Wraps the third-party cua-driver binary (trycua/cua, MIT) as
+  a managed MCP server; the driver runs out-of-process and is never installed by
+  this plugin. READ THIS BEFORE ENABLING: this is real control of your real
+  desktop. The filesystem fence (ADR 0007) and the network egress allowlist
+  (ADR 0008) do NOT apply to anything the agent does through it — those are
+  in-process checks inside protoAgent's own tools, and a mouse click never reaches
+  them. An agent that can open your browser can reach any site; an agent that can
+  open Finder can read any file. Off by default. See ADR 0084.
+enabled: false
+repository: https://github.com/protoLabsAI/cua-plugin
+min_protoagent_version: "0.100.0"
+
+config_section: cua
+config:
+  # Master switch. Off => the MCP server is never started (the factory returns
+  # None), so the driver's tools don't exist and nothing spawns.
+  enabled: false
+  # Path to the cua-driver binary. Blank = probe PATH, then ~/.local/bin
+  # (the upstream installer's default target). Set explicitly when the server
+  # runs with a scrubbed PATH — notably the frozen desktop sidecar (ADR 0058).
+  binary_path: ""
+  # Tool surface. "core" binds the documented snapshot->act loop only; "full"
+  # binds every tool the driver exposes (~28) and floods context (ADR 0005).
+  tool_surface: core
+  # Extra tool names to bind on top of "core" — e.g. ["kill_app", "bring_to_front"].
+  # Ignored when tool_surface is "full". Verify names with the Test button.
+  extra_tools: []
+
+capabilities:
+  # Declarative only — protoAgent does not enforce these (ADR 0071). Stated here
+  # so the console review is honest about the blast radius, not to imply a fence.
+  network: []
+  filesystem: unfenced
+  subprocess: true
+
+test: true
+guide_url: https://github.com/protoLabsAI/cua-plugin#setup
+
+settings:
+  - key: enabled
+    label: "Enable computer use"
+    type: bool
+    group: "Computer use"
+    description: >-
+      Lets the agent control this machine's GUI: read any window, click anything,
+      type anything. protoAgent's filesystem fence and egress allowlist do NOT
+      apply to it — they are in-process checks a mouse click never reaches.
+      Requires the cua-driver binary plus macOS Accessibility + Screen Recording
+      grants. Use “Test connection” after enabling.
+  - key: binary_path
+    label: "cua-driver path"
+    type: string
+    group: "Computer use"
+    description: >-
+      Blank = search PATH, then ~/.local/bin/cua-driver. Set an absolute path if
+      the driver isn't found — the desktop app runs with a different PATH than
+      your shell.
+  - key: tool_surface
+    label: "Tool surface"
+    type: select
+    options: [core, full]
+    group: "Computer use"
+    description: >-
+      “core” binds the documented loop (~16 tools). “full” binds all ~28 and
+      costs context on every turn.
+  - key: extra_tools
+    label: "Extra tools"
+    type: string_list
+    group: "Computer use"
+    # Must be a mapping — the host ignores a bare string, so the field would
+    # always render. The short key is auto-resolved to `cua.tool_surface`.
+    depends_on: { key: tool_surface, equals: core }
+    description: >-
+      Tool names to add on top of “core”, one per line (e.g. kill_app). Unknown
+      names are silently ignored by the MCP filter — “Test connection” lists the
+      driver's real tool names and flags any that don't match.

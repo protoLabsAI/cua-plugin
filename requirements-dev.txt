@@ -1,0 +1,7 @@
+# Test-only deps. At runtime the host (protoAgent) provides fastapi + pyyaml;
+# these let the suite run standalone in CI with no host present. The plugin adds
+# NO runtime pip deps — it registers an MCP server, not Python tools, so there's
+# no langchain-core here either.
+fastapi>=0.110
+pyyaml>=6
+pytest>=8

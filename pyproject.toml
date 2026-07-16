@@ -1,0 +1,25 @@
+[project]
+name = "cua-plugin"
+version = "0.1.0"
+description = "protoAgent plugin: computer use — drive native GUI apps via the third-party cua-driver binary, wrapped as a managed MCP server."
+requires-python = ">=3.11"
+
+# No runtime deps, by design (ADR 0084 D1). The driver is an out-of-process binary
+# the operator installs, so nothing enters protoAgent's venv — which is the entire
+# reason this is an MCP wrapper and not a `cua-sandbox` integration. Keep it that
+# way: the manifest declares no requires_pip, and a test asserts that.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E402", "E501", "E702", "E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]

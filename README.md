@@ -1,0 +1,150 @@
+# cua — computer use for protoAgent
+
+Lets the agent drive **native GUI apps on this machine**: snapshot a window's
+accessibility tree, then click / type / scroll by element — without pulling the
+app to the foreground while you're using the computer.
+
+It wraps [`cua-driver`](https://github.com/trycua/cua) (MIT) as a **managed MCP
+server**. The driver is a separate binary that runs out-of-process, so this
+plugin adds **zero packages** to protoAgent's venv and works in the frozen
+desktop build.
+
+Design rationale, options weighed, and the evidence behind them: **protoAgent
+ADR 0084**.
+
+---
+
+## Read this before you enable it
+
+This is real control of your real desktop — your files, your logged-in sessions,
+your accounts.
+
+**protoAgent's safety fences do not apply to anything the agent does here.** Not
+"apply weakly" — *do not apply*. The network egress allowlist lives inside the
+`fetch_url` tool; the filesystem fence (ADR 0007) is a path check inside
+`fs_tools`. Both are in-process checks in protoAgent's own Python tools, and a
+mouse click never reaches either. An agent that can open your browser can reach
+any site on the internet. An agent that can open Finder can read any file you can.
+
+That's not a bug to be patched — it's what computer use *is*. protoAgent's
+posture (ADR 0071) is trust-and-consent, not sandboxing, and this plugin is that
+posture at full strength. Enable it deliberately.
+
+If you want computer use **with** containment, that's a VM, not this plugin — see
+ADR 0084 D5 on the deferred `cua-sandbox` path.
+
+---
+
+## Setup
+
+**1. Install the driver.** It is not installed for you, and this plugin never
+installs it — the probe just reports it missing until you do.
+
+```sh
+/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"     # macOS / Linux
+irm https://cua.ai/driver/install.ps1 | iex                        # Windows
+```
+
+Lands in `~/.local/bin` by default (`--bin-dir` or `CUA_DRIVER_BIN_DIR` to
+change). Uninstall: `curl -fsSL https://cua.ai/driver/uninstall.sh | bash`.
+
+**2. Grant permissions (macOS).** The driver needs **Accessibility** and **Screen
+Recording** in System Settings ▸ Privacy & Security. There's no way around this
+step and no way to script it — macOS requires a human.
+
+Grants attach to the *responsible app identity*, which is **not** always the one
+you expect: launched from your shell it's your terminal; under the packaged
+desktop app it's the protoAgent sidecar. If you set it up in a terminal and it
+then fails in the desktop app, this is why — grant the other identity too.
+
+**3. Enable the plugin.** Settings ▸ Computer use ▸ *Enable computer use*, then
+hit **Test connection**. That's not decorative: it's the only thing that checks
+all three failure modes at once (binary found, TCC granted, configured tool names
+real).
+
+---
+
+## Settings
+
+| Field | Default | Notes |
+|---|---|---|
+| **Enable computer use** | off | Off ⇒ no server spawns, no tools exist. |
+| **cua-driver path** | *(blank)* | Blank = probe PATH, then `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. |
+| **Tool surface** | `core` | `core` binds the documented loop (17 tools); `full` binds all ~28. |
+| **Extra tools** | *(none)* | Names added on top of `core`, e.g. `kill_app`. |
+
+### Why `core` is the default
+
+The driver publishes ~28 tools. Binding all of them spends context on every turn
+for surface the agent almost never needs (protoAgent ADR 0005). `core` is the
+snapshot→act loop; everything else is one config edit away.
+
+Left out of `core` on purpose:
+
+- **`bring_to_front`** — steals focus, which is the one thing this driver exists
+  to avoid.
+- **`kill_app`** — destructive.
+- **`get_accessibility_tree`** — the raw tree; `get_window_state` is the curated view.
+- **`page` / browser tools** — a second capability with its own session protocol.
+- **`check_for_update`** — driver self-update. Deliberately operator-driven
+  (ADR 0084): `plugins.update_policy` can't see a binary updating itself.
+
+`extra_tools` names that the driver doesn't publish are dropped **silently** by
+the MCP filter — a wrong name is a missing tool, not an error. **Test connection**
+lists the driver's real tools and flags any that don't match.
+
+---
+
+## Gotchas
+
+**Don't turn off persistent MCP sessions.** `mcp.persistent_sessions: false`
+**breaks element-indexed workflows.** The driver caches the per-`(pid, window_id)`
+accessibility element map in the process your session talks to; a stateless
+session spawns a fresh `cua-driver mcp` per call, so the cache is gone between
+the snapshot that minted an `element_index` and the click that uses it. This
+plugin sets `persistent: true` on its entry, but the host computes
+`mcp.persistent_sessions AND entry.persistent` — a global `false` wins and there
+is nothing the entry can do about it.
+
+**The desktop app has a different PATH than your shell.** `~/.local/bin` is
+routinely absent from a service's environment. If the driver works in dev and
+vanishes in the packaged app, set **cua-driver path** to the absolute path.
+
+**`screenshot` doesn't exist.** It was removed upstream (cua PR #1692) — capture
+is `get_window_state` with `capture_mode: "vision"`. Docs and blog posts that
+tell you to call `screenshot` are out of date.
+
+**MCP doesn't need to be on.** A plugin-contributed server activates MCP by
+itself; you don't need `mcp.enabled: true`.
+
+---
+
+## What it registers
+
+- **A managed MCP server** (`register_mcp_server`) spawning `cua-driver mcp` over
+  stdio. Tools arrive namespaced `cua-driver__*`. The factory returns `None` —
+  the documented "don't start" path — when disabled or when the binary is absent.
+- **A skill** (`register_skill_dir`) teaching the snapshot-before-**and**-after
+  invariant. This is not documentation garnish: the driver is
+  accessibility-tree-first, `element_index` values are minted per snapshot and go
+  stale across turns, and actions that silently no-op look identical to actions
+  that worked. Without the protocol the tools look broken.
+- **`POST /api/config/test-cua`** backing the Settings Test button.
+
+No Python tools, no runtime dependencies.
+
+## Development
+
+```sh
+uv venv --python 3.11 && uv pip install -r requirements-dev.txt ruff
+.venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/pytest -q
+```
+
+The suite runs with **no protoAgent host** — `tests/conftest.py` registers the
+plugin as a synthetic package the way the real loader does, and fakes the
+registry seam.
+
+## License
+
+MIT. Wraps [trycua/cua](https://github.com/trycua/cua) (MIT), installed
+separately and not vendored here.
