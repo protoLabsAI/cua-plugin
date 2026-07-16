@@ -1,6 +1,6 @@
 [project]
 name = "cua-plugin"
-version = "0.1.1"
+version = "0.1.2"
 description = "protoAgent plugin: computer use — drive native GUI apps via the third-party cua-driver binary, wrapped as a managed MCP server."
 requires-python = ">=3.11"
 

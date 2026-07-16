@@ -82,13 +82,20 @@ configured tool names real for *this* driver build). A healthy result reads like
 /Users/you/.local/bin/cua-driver · 17 tool(s) bound of 38 published
 ```
 
-**4. Consider running the daemon.** `cua-driver serve` (macOS:
-`open -n -g -a CuaDriver --args serve`) keeps a background process that owns the
-OS handles under `com.trycua.driver`. With it running, one grant to the driver
-covers every caller. Without it, `cua-driver mcp` bootstraps its own runloop
-inside whatever spawned it — which means the **protoAgent process's** identity is
-the one macOS checks, and that differs between `scripts/dev.sh` and the packaged
-desktop app.
+**There is no step 4 — you don't manage a daemon.** When protoAgent spawns
+`cua-driver mcp`, the driver notices it lacks grants under whatever launched it
+and **auto-launches the CuaDriver daemon**, then proxies through it:
+
+```
+cua-driver-rs: mcp launched without CuaDriver.app's TCC grants; auto-launching
+the daemon via `open -n -g -a CuaDriver --args serve` and proxying MCP requests
+through it. Pass --no-daemon-relaunch to stay in-process.
+```
+
+That's why one `permissions grant` is enough: the grant lives on
+`com.trycua.driver` and holds no matter who spawns the server — your shell,
+`scripts/dev.sh`, or the packaged desktop app. Don't pass `--no-daemon-relaunch`;
+it stays in-process and puts the grant burden back on protoAgent's own identity.
 
 ---
 
@@ -153,6 +160,9 @@ itself; you don't need `mcp.enabled: true`.
 - **A managed MCP server** (`register_mcp_server`) spawning `cua-driver mcp` over
   stdio. Tools arrive namespaced `cua-driver__*`. The factory returns `None` —
   the documented "don't start" path — when disabled or when the binary is absent.
+  Verified end-to-end against driver 0.8.3: 17 tools bind, the allowlist holds
+  exactly (no leakage from the other 21), and it activates MCP on its own —
+  `mcp.enabled: true` is not required.
 - **A skill** (`register_skill_dir`) teaching the snapshot-before-**and**-after
   invariant. This is not documentation garnish: the driver is
   accessibility-tree-first, `element_index` values are minted per snapshot and go
