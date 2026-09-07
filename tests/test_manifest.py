@@ -109,6 +109,32 @@ def test_stated_tool_count_matches_the_code(m):
     assert int(claimed.group(1)) == len(driver.CORE_TOOLS)
 
 
+def test_stated_full_surface_count_matches_the_code(m):
+    """The `full` count is the blast-radius number an operator reads *before*
+    flipping the switch, and nothing pinned it — so it sat at "~28" while the code
+    said 38, from v0.1.1 to v0.1.3. The test above guarded the `core` number in the
+    same sentence. Guard both, or the unguarded half drifts again."""
+    import re
+
+    field = next(s for s in m["settings"] if s["key"] == "tool_surface")
+    claimed = re.search(r"(\d+) on driver", field["description"])
+    assert claimed, "the tool_surface description should state how many tools 'full' binds"
+    assert int(claimed.group(1)) == driver.VERIFIED_PUBLISHED_TOOLS
+    assert driver.VERIFIED_DRIVER_VERSION in field["description"]
+
+
+def test_manifest_states_no_approximate_tool_counts():
+    """Comments aren't parsed into `m`, so the yaml-level copy drifted unseen too —
+    and the approximate form is the tell: "~28" is not a checkable claim, so nothing
+    checked it, so it outlived the code by two releases. The real counts are pinned
+    by the two tests above; ban the un-pinnable form outright. (`~/` paths are fine —
+    this matches `~` followed by a digit.)"""
+    import re
+
+    approx = re.findall(r"~\d+", MANIFEST.read_text())
+    assert not approx, f"approximate count(s) in the manifest — state the real number: {approx}"
+
+
 def test_declares_no_secrets(m):
     """Nothing to leak — the driver is a local binary, not an API."""
     assert not m.get("secrets")

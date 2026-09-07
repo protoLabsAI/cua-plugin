@@ -1,6 +1,6 @@
 id: cua
 name: Computer use (cua-driver)
-version: 0.1.2
+version: 0.1.3
 description: >-
   Let the agent drive native GUI apps on THIS machine — snapshot a window's
   accessibility tree, then click/type/scroll by element, without bringing the app
@@ -26,7 +26,8 @@ config:
   # runs with a scrubbed PATH — notably the frozen desktop sidecar (ADR 0058).
   binary_path: ""
   # Tool surface. "core" binds the documented snapshot->act loop only; "full"
-  # binds every tool the driver exposes (~28) and floods context (ADR 0005).
+  # binds every tool the driver exposes (38 on driver 0.8.3) and floods context
+  # (ADR 0005) — including the ones "core" excludes on purpose.
   tool_surface: core
   # Extra tool names to bind on top of "core" — e.g. ["kill_app", "bring_to_front"].
   # Ignored when tool_surface is "full". Verify names with the Test button.
@@ -67,8 +68,11 @@ settings:
     options: [core, full]
     group: "Computer use"
     description: >-
-      “core” binds the documented loop (17 tools). “full” binds all ~28 and
-      costs context on every turn.
+      “core” binds the documented loop (17 tools). “full” binds every tool the
+      installed driver publishes — 38 on driver 0.8.3 — costing context on every
+      turn and adding the surface “core” leaves out on purpose: kill_app,
+      bring_to_front, set_config and check_for_update (driver self-update).
+      “Test connection” reports the real count for your installed driver.
   - key: extra_tools
     label: "Extra tools"
     type: string_list

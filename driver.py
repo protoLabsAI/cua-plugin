@@ -31,9 +31,17 @@ _BINARY = "cua-driver"
 #: sidecar, which does not inherit your shell's environment.
 _FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 
-#: The documented snapshot->act loop (ADR 0084 D3). Driver 0.8.3 publishes **38**
-#: tools; binding all of them costs context on every turn for surface the agent
-#: rarely needs (ADR 0005). Deliberately excluded from the default, available via
+#: The driver build the tool-surface claims were verified against. The published
+#: count is version-dependent, and operator-facing copy quotes it, so it lives
+#: here as a constant the manifest tests can hold rather than as a number in prose
+#: that drifts — which it did: v0.1.1 corrected this file to 38 and left the
+#: manifest saying "~28", where it stayed until v0.1.3.
+VERIFIED_DRIVER_VERSION = "0.8.3"
+VERIFIED_PUBLISHED_TOOLS = 38
+
+#: The documented snapshot->act loop (ADR 0084 D3). Binding all of the driver's
+#: published tools costs context on every turn for surface the agent rarely needs
+#: (ADR 0005). Deliberately excluded from the default, available via
 #: ``extra_tools``:
 #:   bring_to_front     — steals focus, which is the whole thing the driver avoids
 #:   kill_app           — destructive (kill -9)
