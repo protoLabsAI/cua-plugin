@@ -1,7 +1,6 @@
 name: CI
 
-# Lint + test. Runs on the org's Namespace Linux profile; a fork without the
-# profile can override the NSC_RUNNER repo variable to a hosted runner.
+# Lint + test. Runs on a GitHub-hosted runner (ubuntu-latest).
 on:
   pull_request:
   push:
@@ -10,7 +9,7 @@ on:
 
 jobs:
   test:
-    runs-on: ${{ vars.NSC_RUNNER || 'namespace-profile-protolabs-linux' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
